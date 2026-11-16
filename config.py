@@ -6,7 +6,10 @@ load_dotenv()
 
 def get_env_int(key, default=None):
     val = os.getenv(key)
-    return int(val) if val and val.strip().replace("-", "").isdigit() else default
+    try:
+        return int(val.strip()) if val and val.strip() else default
+    except (TypeError, ValueError):
+        return default
 
 def get_env_list(key, default=None):
     if default is None:
@@ -31,7 +34,7 @@ API_HASH = os.getenv("API_HASH")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 OWNER_ID = get_env_int("OWNER_ID")
-SUDO_USERS = [OWNER_ID] #Add more sudo users to give access of gcast, ucast
+SUDO_USERS = list(dict.fromkeys(([OWNER_ID] if OWNER_ID else []) + get_env_list("SUDO_USERS")))
 
 MONGO_DB = os.getenv("MONGO_DB")
 MONGODB_DB_NAME = os.getenv("MONGODB_DB_NAME", "BioLinkRemover")
@@ -48,3 +51,7 @@ DIRTY_WORDS = [
 DIRTY_SITES = [
     "bit.ly", "tinyurl.com", "t.co", "shorturl.at", "cutt.ly", "linktr.ee"
 ]
+
+# Runtime tuning (safe defaults for a single Heroku worker).
+HANDLER_WORKERS = max(4, min(get_env_int("HANDLER_WORKERS", 16), 64))
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()

@@ -38,6 +38,20 @@
     "LOGGER_GROUP": {
       "description": "Telegram group/channel ID used for bot logs",
       "required": false
+    },
+    "SUDO_USERS": {
+      "description": "Optional comma-separated Telegram user IDs with sudo access",
+      "required": false
+    },
+    "HANDLER_WORKERS": {
+      "description": "Concurrent update handlers (default 16; tune for your dyno size)",
+      "value": "16",
+      "required": false
+    },
+    "LOG_LEVEL": {
+      "description": "Logging verbosity: DEBUG, INFO, WARNING or ERROR",
+      "value": "INFO",
+      "required": false
     }
   },
   "buildpacks": [
