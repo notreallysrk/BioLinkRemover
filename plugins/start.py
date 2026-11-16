@@ -32,7 +32,7 @@ def back_keyboard() -> InlineKeyboardMarkup:
 @Client.on_message(filters.command("start"))
 async def start_cmd(client: Client, message: Message):
     chat_type = message.chat.type
-    bot_user = await client.get_me()
+    bot_user = client.me or await client.get_me()
     if chat_type == ChatType.PRIVATE:
         user_id = message.from_user.id
         if user_id not in USER_IDS_CACHE:
@@ -72,7 +72,7 @@ async def start_cmd(client: Client, message: Message):
 
 @Client.on_callback_query(filters.regex("^start_pm$"))
 async def start_pm_callback(client: Client, callback_query: CallbackQuery):
-    bot_user = await client.get_me()
+    bot_user = client.me or await client.get_me()
     welcome_text = (
         f"{premium_emoji('home', '👋')} <b>Hello {callback_query.from_user.first_name}!</b>\n\n"
         f"I am <b>𝖡𝗂𝗈 𝖫𝗂𝗇𝗄 𝖱𝖾𝗌𝗍𝗋𝗂𝖼𝗍𝗈𝗋</b>, I help keep your groups safe by checking user bios for unwanted links "

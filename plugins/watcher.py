@@ -7,6 +7,9 @@ from pyrogram.raw.functions.users import GetFullUser
 import re
 import logging
 import asyncio
+import time
+import weakref
+from collections import OrderedDict
 import config
 from Client.cache import USER_IDS_CACHE, GROUP_IDS_CACHE
 from Client.helpers import get_group_config, get_approved_users, is_user_admin
@@ -14,37 +17,66 @@ from Client.premium import premium_button, premium_emoji
 
 logger = logging.getLogger("BioLinkRemover.Watcher")
 
+# A profile bio rarely changes every second. Caching it avoids one expensive
+# Telegram GetFullUser request for every message in a busy group.
+BIO_CACHE_TTL = 30
+BIO_CACHE_MAX = 20000
+BIO_CACHE = OrderedDict()
+BIO_LOCKS = weakref.WeakValueDictionary()
+
 URL_REGEX = re.compile(
     r'(https?://[^\s]+|www\.[^\s]+|[a-zA-Z0-9.-]+\.[a-zA-Z]{2,6}/[^\s]*|[a-zA-Z0-9.-]+\.(?:com|org|net|xyz|info|biz|me|co|cc|top|click|online|shop|site|website|club|icu|vip|work|fun|live|tech|app|link|dev|py|sh|us|in|uk|ru|br|tr|de|fr|it|es|ca|au|su|tk|ga|cf|gq|ml|t\.me)(?:/[^\s]*)?)',
     re.IGNORECASE
 )
 
-async def check_bio_spam(client: Client, user_id: int) -> tuple[bool, str | None]:
-    try:
-        peer = await client.resolve_peer(user_id)
-        full_user = await client.invoke(GetFullUser(id=peer))
-        bio = full_user.full_user.about
+async def check_bio_spam(client: Client, user_id: int, force: bool = False) -> tuple[bool, str | None]:
+    now = time.monotonic()
+    cached = BIO_CACHE.get(user_id)
+    if not force and cached and now - cached[0] < BIO_CACHE_TTL:
+        BIO_CACHE.move_to_end(user_id)
+        return cached[1], cached[2]
 
-        if not bio:
+    lock = BIO_LOCKS.get(user_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        BIO_LOCKS[user_id] = lock
+    async with lock:
+        now = time.monotonic()
+        cached = BIO_CACHE.get(user_id)
+        if not force and cached and now - cached[0] < BIO_CACHE_TTL:
+            BIO_CACHE.move_to_end(user_id)
+            return cached[1], cached[2]
+
+        try:
+            peer = await client.resolve_peer(user_id)
+            full_user = await client.invoke(GetFullUser(id=peer))
+            bio = full_user.full_user.about or ""
+            bio_lower = bio.casefold()
+
+            reason = None
+            for word in config.DIRTY_WORDS:
+                if word.casefold() in bio_lower:
+                    reason = f"contains blacklisted word '{word}'"
+                    break
+            if reason is None:
+                for site in config.DIRTY_SITES:
+                    if site.casefold() in bio_lower:
+                        reason = f"contains blacklisted site link '{site}'"
+                        break
+            if reason is None and URL_REGEX.search(bio):
+                reason = "contains a link or URL"
+
+            result = (reason is not None, reason)
+            BIO_CACHE[user_id] = (time.monotonic(), result[0], result[1])
+            BIO_CACHE.move_to_end(user_id)
+            while len(BIO_CACHE) > BIO_CACHE_MAX:
+                BIO_CACHE.popitem(last=False)
+            return result
+        except Exception as e:
+            # Do not cache failures: a temporary Telegram error must not poison
+            # the user's result for the full cache lifetime.
+            logger.debug("Failed to fetch bio for user %s: %s", user_id, e)
             return False, None
-
-        bio_lower = bio.lower()
-
-        for word in config.DIRTY_WORDS:
-            if word.lower() in bio_lower:
-                return True, f"contains blacklisted word '{word}'"
-
-        for site in config.DIRTY_SITES:
-            if site.lower() in bio_lower:
-                return True, f"contains blacklisted site link '{site}'"
-
-        if URL_REGEX.search(bio):
-            return True, "contains a link or URL"
-
-        return False, None
-    except Exception as e:
-        logger.debug(f"Failed to fetch bio for user {user_id}: {e}")
-        return False, None
 
 @Client.on_message(filters.group & ~filters.service)
 async def scan_group_message(client: Client, message: Message):
@@ -62,6 +94,8 @@ async def scan_group_message(client: Client, message: Message):
         return
 
     user_id = message.from_user.id
+    if message.from_user.is_bot:
+        return
 
     if user_id not in USER_IDS_CACHE:
         try:
@@ -158,13 +192,13 @@ async def refresh_mute_callback(client: Client, callback_query: CallbackQuery):
         await callback_query.answer("Only the muted user themselves can trigger a rescan.", show_alert=True)
         return
 
-    is_spam, reason = await check_bio_spam(client, target_user_id)
+    is_spam, reason = await check_bio_spam(client, target_user_id, force=True)
     if is_spam:
         await callback_query.answer(f"Rescan failed! Your bio still {reason}.", show_alert=True)
         return
 
     try:
-        await client.unban_chat_member(chat_id, target_user_id)
+        await client.restrict_chat_member(chat_id, target_user_id, ChatPermissions.all_permissions())
 
         try:
             target_user = await client.get_users(target_user_id)
